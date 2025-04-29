@@ -77,8 +77,9 @@ class TAPNextTrackingState:
   """State for TAPNext."""
 
   step: int
-  query_points: torch.Tensor  # Float["*B Q 3"]
+  prev_hidden_state: List[tapnext_lru_modules.RecurrentBlockCache] = None
   hidden_state: List[tapnext_lru_modules.RecurrentBlockCache] = None
+  prev_input_tokens: torch.Tensor = None
 
 
 class TAPNext(nn.Module):
@@ -157,6 +158,61 @@ class TAPNext(nn.Module):
         nn.GELU(),
         nn.Linear(256, 512),
     )
+
+    self.state=None
+
+  def update_cache(self, query_points: torch.Tensor, removed_indices: List[int]):
+    """Update the cache with the current query points."""
+    B, T, P, C = self.state.prev_input_tokens.shape
+    video_tokens, point_tokens = self.state.prev_input_tokens.split(1024, dim=2)
+    device = query_points.device
+    cache_prev = self.state.prev_hidden_state
+    Q_prev = P - 1024
+    Q_new = query_points.shape[1] + len(removed_indices) - Q_prev  # Number of new queries added (in the previous frame)
+
+    if len(removed_indices) > 0:
+      removed_mask = torch.ones(Q_prev, device=device, dtype=torch.bool)
+      removed_mask[removed_indices] = False
+      point_tokens = point_tokens[:, :, removed_mask, :]
+      removed_mask = torch.cat((torch.ones(1024, device=device, dtype=torch.bool), removed_mask), dim=0)
+      for layer_cache in cache_prev:
+        layer_cache.rg_lru_state = layer_cache.rg_lru_state[removed_mask]
+        layer_cache.conv1d_state = layer_cache.conv1d_state[removed_mask]
+
+    if Q_new > 0:
+      for layer_cache in cache_prev:
+          layer_cache.rg_lru_state = torch.cat([layer_cache.rg_lru_state, torch.zeros(Q_new, C, device=device)], dim=0)
+          layer_cache.conv1d_state = torch.cat([layer_cache.conv1d_state, torch.zeros(Q_new, 3, C, device=device)], dim=0)
+    else:  # If no new points are added, I'm assuming that removing rows of cache corresponding to the removed points would suffice and I dont have to recompute the cache for the remaining set of points
+      if len(removed_indices) > 0:
+        for layer_cache in self.state.hidden_state:
+            layer_cache.rg_lru_state = layer_cache.rg_lru_state[removed_mask]
+            layer_cache.conv1d_state = layer_cache.conv1d_state[removed_mask]
+      return
+
+    # Get new query tokens, concatenate with point_tokens and then concatenate the whole thing with video_tokens
+    new_queries = query_points[:,-Q_new:,:]
+    assert (new_queries[..., :1]==(self.state.step-1)).all()
+    new_queries = torch.cat([new_queries[..., :1] - (self.state.step-1), new_queries[..., 1:]], dim=-1)
+    new_point_tokens = self.embed_queries(T, new_queries)  # [b t Q c]
+    point_tokens = torch.cat([point_tokens, new_point_tokens], dim=2)  # [b t (Q) c]
+
+    # Run the tokens through the TRecViT layers to obtain updated cache
+    x = torch.cat([video_tokens, point_tokens], dim=2)  # [b t (h * w + Q) c]
+    cache_new = []
+    use_linear_scan = not self.training
+    for blk, cache in zip(self.blocks, cache_prev):
+      if self.use_checkpointing:
+        x, layer_cache_new = torch.utils.checkpoint.checkpoint(
+            blk, x, cache, use_linear_scan, use_reentrant=False
+        )
+      else:
+        x, layer_cache_new = blk(
+            x, cache=cache, use_linear_scan=use_linear_scan
+        )
+      cache_new.append(layer_cache_new)
+
+    self.state.hidden_state = cache_new
 
   def embed_queries(self, timesteps, query_points):
     b, q, _ = query_points.shape
@@ -241,7 +297,10 @@ class TAPNext(nn.Module):
     visible_logits = self.visible_head(x)
     return tracks, track_logits, visible_logits
 
-  def forward(self, video, query_points=None, state=None):
+  def forward(self, video, query_points=None, removed_indices: List[int] = None):
+    if self.state is not None:
+      self.update_cache(query_points, removed_indices)
+
     # video.shape
     b, t, _, _, _ = video.shape
     # [b, t, h, w, 3] -> [b, t, 3, h, w]
@@ -253,22 +312,23 @@ class TAPNext(nn.Module):
         video_tokens, '(b t) c h w -> b t (h w) c', b=b, t=t
     )
     video_tokens = video_tokens + self.image_pos_emb.unsqueeze(0)
-    if state is not None:
+
+    if self.state is not None:
       # in online tracking, we put query "back in time"
-      if query_points is None:
-        query_points = state.query_points
       query_points = torch.cat(
-          [query_points[..., :1] - state.step, query_points[..., 1:]], dim=-1
+          [query_points[..., :1] - self.state.step, query_points[..., 1:]], dim=-1
       )
-      step = state.step
+      step = self.state.step
     else:
       step = 0
+
     point_tokens = self.embed_queries(t, query_points)  # [b t Q c]
     x = torch.cat([video_tokens, point_tokens], dim=2)  # [b t (h * w + Q) c]
+    prev_input_tokens = x
     ssm_cache = []
     use_linear_scan = not self.training
     for blk, cache in zip(
-        self.blocks, state.hidden_state if state is not None else [None] * 12
+        self.blocks, self.state.hidden_state if self.state is not None else [None] * 12
     ):
       if self.use_checkpointing:
         x, ssm_cache_layer = torch.utils.checkpoint.checkpoint(
@@ -281,13 +341,13 @@ class TAPNext(nn.Module):
       ssm_cache.append(ssm_cache_layer)
     x = self.encoder_norm(x)
     video_tokens, point_tokens = x.split(h * w, dim=2)
-    return (
-        *self.prediction_heads(point_tokens),
-        TAPNextTrackingState(
-            step=step + t,
-            query_points=state.query_points
-            if state is not None
-            else query_points,
-            hidden_state=ssm_cache,
-        ),
-    )
+
+    if self.state is None:  
+      self.state = TAPNextTrackingState(step=step + t, hidden_state=ssm_cache, prev_input_tokens=prev_input_tokens)
+    else:
+      self.state.prev_hidden_state = self.state.hidden_state
+      self.state.hidden_state = ssm_cache
+      self.state.step = step + t
+      self.state.prev_input_tokens = prev_input_tokens
+    
+    return self.prediction_heads(point_tokens)

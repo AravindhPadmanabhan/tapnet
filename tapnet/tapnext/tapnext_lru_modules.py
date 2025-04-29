@@ -24,6 +24,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from dataclasses import dataclass
+
 _MAX_SQRT_GRADIENT = 1000.0
 
 
@@ -325,9 +327,10 @@ class Einsum(nn.Module):
     return torch.einsum(self.eqn, x, self.w) + self.b
 
 
-class RecurrentBlockCache(NamedTuple):
-  rg_lru_state: torch.Tensor  # "*b e"
-  conv1d_state: torch.Tensor  # "*b w e"
+@dataclass
+class RecurrentBlockCache:
+    rg_lru_state: torch.Tensor
+    conv1d_state: torch.Tensor
 
 
 def gelu(x: torch.Tensor) -> torch.Tensor:
