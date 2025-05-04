@@ -15,8 +15,7 @@
 
 """Base layers."""
 
-from collections.abc import Sequence
-from typing import NamedTuple
+from typing import Union, Optional, Sequence
 
 import einops
 from tapnet.tapnext.pscan import pscan
@@ -36,8 +35,8 @@ class RMSNorm(nn.Module):
       self,
       width: int,
       eps: float = 1e-6,
-      device: str | torch.device | None = None,
-      dtype: torch.dtype | None = None,
+      device: Optional[Union[str, torch.device]] = None,
+      dtype: Optional[torch.dtype] = None,
   ):
     super().__init__()
     self.width = width
@@ -66,8 +65,8 @@ class BlockDiagonalLinear(nn.Module):
       width: int,
       num_blocks: int,
       w_init_variance_scale: float = 1.0,
-      device: str | torch.device | None = None,
-      dtype: torch.dtype | None = None,
+      device: Optional[Union[str, torch.device]] = None,
+      dtype: Optional[torch.dtype] = None,
   ):
     super().__init__()
     self.width = width
@@ -172,8 +171,8 @@ class RGLRU(nn.Module):
       width: int,
       num_heads: int,
       w_init_variance_scale: float = 1.0,
-      device: str | torch.device | None = None,
-      dtype: torch.dtype | None = None,
+      device: Optional[Union[str, torch.device]] = None,
+      dtype: Optional[torch.dtype] = None,
   ):
     super().__init__()
     self.width = width
@@ -232,7 +231,7 @@ class RGLRU(nn.Module):
       cls,
       batch_size: int,
       width: int,
-      device: str | torch.device | None = None,
+      device: Optional[Union[str, torch.device]] = None,
   ):
     """Returns an empty initialized cache for the RG-LRU."""
     # RG-LRU cache always in float32.
@@ -247,8 +246,8 @@ class CausalConv1D(nn.Module):
       width: int,
       temporal_width: int,
       w_init_variance_scale: float = 0.01,
-      device: str | torch.device | None = None,
-      dtype: torch.dtype | None = None,
+      device: Optional[Union[str, torch.device]] = None,
+      dtype: Optional[torch.dtype] = None,
   ):
     super().__init__()
     self.width = width
@@ -309,8 +308,8 @@ class Einsum(nn.Module):
       b_shape: Sequence[int],
       eqn: str,
       w_init_variance_scale: float = 1.0,
-      device: str | torch.device | None = None,
-      dtype: torch.dtype | None = None,
+      device: Optional[Union[str, torch.device]] = None,
+      dtype: Optional[torch.dtype] = None,
   ):
     super().__init__()
     self.w_shape = tuple(w_shape)
@@ -345,11 +344,11 @@ class RecurrentBlock(nn.Module):
       self,
       width: int,
       num_heads: int,
-      lru_width: int | None = None,
+      lru_width: Optional[int] = None,
       conv1d_temporal_width: int = 4,
       final_w_init_variance_scale: float = 1.0,
-      device: str | torch.device | None = None,
-      dtype: torch.dtype | None = None,
+      device: Optional[Union[str, torch.device]] = None,
+      dtype: Optional[torch.dtype] = None,
   ):
     super().__init__()
     self.width = width
@@ -391,7 +390,7 @@ class RecurrentBlock(nn.Module):
     )
 
   def forward(
-      self, x, cache: RecurrentBlockCache | None = None, use_linear_scan=True
+      self, x, cache: Optional[RecurrentBlockCache] = None, use_linear_scan=True
   ):
     y = self.linear_y(x)
     y = gelu(y)
@@ -422,7 +421,7 @@ class RecurrentBlock(nn.Module):
       lru_width: int,
       dtype: torch.dtype,
       conv1d_temporal_width: int = 4,
-      device: str | torch.device | None = None,
+      device: Optional[Union[str, torch.device]] = None,
   ) -> RecurrentBlockCache:
     """Initializes an empty RG-LRU and Conv1D cache for the block."""
     return RecurrentBlockCache(
@@ -449,8 +448,8 @@ class MLPBlock(nn.Module):
       width: int,
       expanded_width: int,
       final_w_init_variance_scale: float = 1.0,
-      device: str | torch.device | None = None,
-      dtype: torch.dtype | None = None,
+      device: Optional[Union[str, torch.device]] = None,
+      dtype: Optional[torch.dtype] = None,
   ):
     super().__init__()
     self.width = width
@@ -487,11 +486,11 @@ class ResidualBlock(nn.Module):
       width: int,
       mlp_expanded_width: int,
       num_heads: int,
-      lru_width: int | None = None,
+      lru_width: Optional[int] = None,
       conv1d_temporal_width: int = 4,
       final_w_init_variance_scale: float = 1.0,
-      device: str | torch.device | None = None,
-      dtype: torch.dtype | None = None,
+      device: Optional[Union[str, torch.device]] = None,
+      dtype: Optional[torch.dtype] = None,
   ):
     super().__init__()
     self.width = width
@@ -530,7 +529,7 @@ class ResidualBlock(nn.Module):
     )
 
   def forward(
-      self, x, cache: RecurrentBlockCache | None = None, use_linear_scan=True
+      self, x, cache: Optional[RecurrentBlockCache] = None, use_linear_scan=True
   ):
     raw_x = x
     inputs_normalized = self.temporal_pre_norm(raw_x)
@@ -547,9 +546,9 @@ class ResidualBlock(nn.Module):
       batch_size: int,
       width: int,
       dtype: torch.dtype,
-      lru_width: int | None = None,
+      lru_width: Optional[int] = None,
       conv1d_temporal_width: int = 4,
-      device: str | torch.device | None = None,
+      device: Optional[Union[str, torch.device]] = None,
   ) -> RecurrentBlockCache:
     """Initializes an empty cache for the block."""
     return RecurrentBlock.init_cache(
