@@ -48,7 +48,20 @@ def tracker_certainty(coord_yx, track_logits, radius=8):
   sm_y, coord_y = get_window(coord_yx[:, 0:1], track_softmax_y)
   sm_x, coord_x = get_window(coord_yx[:, 1:2], track_softmax_x)
   sm = sm_y[..., :, None] * sm_x[..., None, :]
-  grid_x, grid_y = torch.vmap(torch.meshgrid)(coord_x, coord_y)
+  # grid_x, grid_y = torch.vmap(torch.meshgrid)(coord_x, coord_y)
+  # coord_x, coord_y: shape (B, N) — batch of 1D coordinates
+  batch_size = coord_x.shape[0]
+  grid_x = []
+  grid_y = []
+  
+  for i in range(batch_size):
+      gx, gy = torch.meshgrid(coord_x[i], coord_y[i], indexing='ij')  # PyTorch ≥1.10 supports 'indexing'
+      grid_x.append(gx)
+      grid_y.append(gy)
+  
+  grid_x = torch.stack(grid_x)  # shape (B, N, N)
+  grid_y = torch.stack(grid_y)  # shape (B, N, N)
+
   # grid_x.shape == [b, N, N]
   grid = torch.stack([grid_y, grid_x], dim=-1)
   in_radius = ((grid - coord_yx[:, None, None]) ** 2).sum(-1) <= (

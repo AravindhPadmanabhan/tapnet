@@ -79,7 +79,7 @@ def run_eval_per_frame(
 
     pred_certainty = tracker_certainty(tracks, track_logits, radius)
     pred_visible_and_certain = (
-        F.sigmoid(visible_logits) * pred_certainty
+        torch.sigmoid(visible_logits) * pred_certainty
     ) > threshold
 
     if use_certainty:

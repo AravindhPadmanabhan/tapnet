@@ -38,7 +38,7 @@ class TAPNextOnline(nn.Module):
             pred_visible = (visible_logits > 0).transpose(1,2)
 
             pred_certainty = tracker_certainty(tracks.transpose(1,2), track_logits.transpose(1,2), radius=self.radius)
-            pred_visible_and_certain = (F.sigmoid(visible_logits.transpose(1,2)) * pred_certainty) > self.threshold
+            pred_visible_and_certain = (torch.sigmoid(visible_logits.transpose(1,2)) * pred_certainty) > self.threshold
 
             if self.use_certainty:
               track_status = pred_visible_and_certain.squeeze(-1)
