@@ -31,7 +31,7 @@ class TAPNextOnline(nn.Module):
             frame = (frame/255.0) * 2.0 - 1.0
 
             queries = queries[:,:,[0,2,1]]  # t, y, x
-            queries[:, :, 1:] = queries[:, :, 1:] * queries.new_tensor([(self.resolution[0])/(H-1), (self.resolution[1])/(W-1)])
+            queries[:, :, 1:] = queries[:, :, 1:] * queries.new_tensor([(self.resolution[0]-1)/(H-1), (self.resolution[1]-1)/(W-1)])
             queries = queries.to(self.device).float()
 
             tracks, track_logits, visible_logits = self.model(video=frame, query_points=queries, removed_indices=removed_indices)
