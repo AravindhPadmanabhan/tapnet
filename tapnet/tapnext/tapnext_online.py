@@ -21,6 +21,10 @@ class TAPNextOnline(nn.Module):
         self.model = self.model.to(device)
         self.model.eval()
 
+    def reset(self):
+        """Reset the model state if needed."""
+        self.model.state = None
+
     @torch.inference_mode()
     def forward(self, frame: torch.Tensor, queries: torch.Tensor, removed_indices: List[int] = []):
         with torch.amp.autocast('cuda', dtype=torch.float16, enabled=True):

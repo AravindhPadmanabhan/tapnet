@@ -132,7 +132,7 @@ if __name__ == '__main__':
     deltas = []
     aj_scores = []
     oa_scores = []
-    for i in range(1):
+    for i in range(50):
         delta, aj, oa = main_worker(args)
         deltas.append(delta)
         aj_scores.append(aj)
