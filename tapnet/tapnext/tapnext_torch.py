@@ -173,11 +173,13 @@ class TAPNext(nn.Module):
 
     point_tokens = torch.zeros(B, T, N_max, C, device=device)
     for i in range(B):
-      point_tokens[i,:,:removed_mask[i].sum(),:] = prev_point_tokens[:,:,removed_mask[i],:]
+      point_tokens[i,:,:removed_mask[i].sum(),:] = prev_point_tokens[i,:,removed_mask[i],:]
 
     # Get new query tokens, concatenate with point_tokens and then concatenate the whole thing with prev_video_tokens
     for i in range(B):
       Q_new = N_max - removed_mask[i].sum()
+      if Q_new == 0:
+        continue
       new_queries = query_points[i,-Q_new:,:].unsqueeze(0)  # [1, Q_new, 3]
       assert (new_queries[..., :1]==(self.state.step-1)).all()
       new_queries = torch.cat([new_queries[..., :1] - (self.state.step-1), new_queries[..., 1:]], dim=-1)
@@ -185,7 +187,7 @@ class TAPNext(nn.Module):
       assert (point_tokens[i,:,-Q_new:,:]==0.0).all()
       point_tokens[i,:,-Q_new:,:] = new_point_tokens.unsqueeze(0)
 
-    removed_mask = torch.cat((torch.ones(B, 1024, device=device, dtype=torch.bool), removed_mask), dim=0)
+    removed_mask = torch.cat((torch.ones(B, 1024, device=device, dtype=torch.bool), removed_mask), dim=1)
     rg_lru_pad = torch.zeros(B, 1024+N_max, C, device=device)
     conv1d_pad = torch.zeros(B, 1024+N_max, 3, C, device=device)
     for layer_cache in prev_cache:
@@ -301,7 +303,8 @@ class TAPNext(nn.Module):
 
   def forward(self, video, query_points=None, removed_mask: torch.Tensor = None):
     if self.state is not None:
-      self.update_cache(query_points, removed_mask)
+      if self.state.step > 1:
+        self.update_cache(query_points, removed_mask)
 
     # video.shape
     b, t, _, _, _ = video.shape

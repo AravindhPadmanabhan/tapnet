@@ -42,14 +42,17 @@ class TAPNextOnline(nn.Module):
 
             queries = queries.to(self.device).float()
             removed_mask = self.splitter.split_removed_indices(removed_indices)    # 6, N
-            queries = self.splitter.split_queries(queries, t=self.model.step - 1)  # 6, N, 3
+            t = self.model.state.step-1 if self.model.state is not None else 0
+            queries = self.splitter.split_queries(queries, t=t)  # 6, N, 3
             queries = queries[:,:,[0,2,1]]  # t, y, x
 
             tracks, track_logits, visible_logits = self.model(video=frame, query_points=queries, removed_mask=removed_mask)
+            print("track logits shape: ", track_logits.shape, "  ", track_logits.min(), "  ", track_logits.max())
             pred_visible = (visible_logits).transpose(1,2)
 
             pred_certainty = tracker_certainty(tracks.transpose(1,2), track_logits.transpose(1,2), radius=self.radius)
             pred_visible_and_certain = (torch.sigmoid(visible_logits.transpose(1,2)) * pred_certainty)
+            print("pred_visible_and_certain: ", pred_visible_and_certain.shape, "  ", pred_visible_and_certain.min(), "  ", pred_visible_and_certain.max())
             if self.use_certainty:
               track_status = pred_visible_and_certain.squeeze(-1)
 
