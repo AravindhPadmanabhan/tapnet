@@ -161,47 +161,49 @@ class TAPNext(nn.Module):
 
     self.state=None
 
-  def update_cache(self, query_points: torch.Tensor, removed_indices: List[int]):
+  def update_cache(self, query_points: torch.Tensor, removed_mask: torch.Tensor):
     """Update the cache with the current query points."""
     B, T, P, C = self.state.prev_input_tokens.shape
-    video_tokens, point_tokens = self.state.prev_input_tokens.split(1024, dim=2)
+    prev_video_tokens, prev_point_tokens = self.state.prev_input_tokens.split(1024, dim=2)
     device = query_points.device
-    cache_prev = self.state.prev_hidden_state
-    Q_prev = P - 1024
-    Q_new = query_points.shape[1] + len(removed_indices) - Q_prev  # Number of new queries added (in the previous frame)
+    prev_cache = self.state.prev_hidden_state
+    N_prev = P - 1024
+    N_max = query_points.shape[1]
+    # Q_new = query_points.shape[1] + len(removed_indices) - Q_prev  # Number of new queries added (in the previous frame)
 
-    if len(removed_indices) > 0:
-      removed_mask = torch.ones(Q_prev, device=device, dtype=torch.bool)
-      removed_mask[removed_indices] = False
-      point_tokens = point_tokens[:, :, removed_mask, :]
-      removed_mask = torch.cat((torch.ones(1024, device=device, dtype=torch.bool), removed_mask), dim=0)
-      for layer_cache in cache_prev:
-        layer_cache.rg_lru_state = layer_cache.rg_lru_state[removed_mask]
-        layer_cache.conv1d_state = layer_cache.conv1d_state[removed_mask]
+    point_tokens = torch.zeros(B, T, N_max, C, device=device)
+    for i in range(B):
+      point_tokens[i,:,:removed_mask[i].sum(),:] = prev_point_tokens[:,:,removed_mask[i],:]
 
-    if Q_new > 0:
-      for layer_cache in cache_prev:
-          layer_cache.rg_lru_state = torch.cat([layer_cache.rg_lru_state, torch.zeros(Q_new, C, device=device)], dim=0)
-          layer_cache.conv1d_state = torch.cat([layer_cache.conv1d_state, torch.zeros(Q_new, 3, C, device=device)], dim=0)
-    else:  # If no new points are added, I'm assuming that removing rows of cache corresponding to the removed points would suffice and I dont have to recompute the cache for the remaining set of points
-      if len(removed_indices) > 0:
-        for layer_cache in self.state.hidden_state:
-            layer_cache.rg_lru_state = layer_cache.rg_lru_state[removed_mask]
-            layer_cache.conv1d_state = layer_cache.conv1d_state[removed_mask]
-      return
+    # Get new query tokens, concatenate with point_tokens and then concatenate the whole thing with prev_video_tokens
+    for i in range(B):
+      Q_new = N_max - removed_mask[i].sum()
+      new_queries = query_points[i,-Q_new:,:].unsqueeze(0)  # [1, Q_new, 3]
+      assert (new_queries[..., :1]==(self.state.step-1)).all()
+      new_queries = torch.cat([new_queries[..., :1] - (self.state.step-1), new_queries[..., 1:]], dim=-1)
+      new_point_tokens = self.embed_queries(T, new_queries)  # [b t Q c]
+      assert (point_tokens[i,:,-Q_new:,:]==0.0).all()
+      point_tokens[i,:,-Q_new:,:] = new_point_tokens.unsqueeze(0)
 
-    # Get new query tokens, concatenate with point_tokens and then concatenate the whole thing with video_tokens
-    new_queries = query_points[:,-Q_new:,:]
-    assert (new_queries[..., :1]==(self.state.step-1)).all()
-    new_queries = torch.cat([new_queries[..., :1] - (self.state.step-1), new_queries[..., 1:]], dim=-1)
-    new_point_tokens = self.embed_queries(T, new_queries)  # [b t Q c]
-    point_tokens = torch.cat([point_tokens, new_point_tokens], dim=2)  # [b t (Q) c]
+    removed_mask = torch.cat((torch.ones(B, 1024, device=device, dtype=torch.bool), removed_mask), dim=0)
+    rg_lru_pad = torch.zeros(B, 1024+N_max, C, device=device)
+    conv1d_pad = torch.zeros(B, 1024+N_max, 3, C, device=device)
+    for layer_cache in prev_cache:
+      rg_lru = einops.rearrange(layer_cache.rg_lru_state, '(b n) c -> b n c', b=B, n=1024+N_prev)
+      conv1d = einops.rearrange(layer_cache.conv1d_state, '(b n) k c -> b n k c', b=B, n=1024+N_prev)
+      for i in range(B):
+        rg_lru_pad[i, :removed_mask[i].sum(), :] = rg_lru[i, removed_mask[i], :]
+        conv1d_pad[i, :removed_mask[i].sum(), :, :] = conv1d[i, removed_mask[i], :, :]
+      layer_cache.rg_lru_state = einops.rearrange(rg_lru_pad, 'b n c -> (b n) c')
+      layer_cache.conv1d_state = einops.rearrange(conv1d_pad, 'b n k c -> (b n) k c')
+
+    # SHOULD I HAVE AN EXCEPTION CASE FOR NO NEW POINTS LIKE SHOWN IN THE COMMENT BELOW?
 
     # Run the tokens through the TRecViT layers to obtain updated cache
-    x = torch.cat([video_tokens, point_tokens], dim=2)  # [b t (h * w + Q) c]
+    x = torch.cat([prev_video_tokens, point_tokens], dim=2)  # [b t (h * w + Q) c]
     cache_new = []
     use_linear_scan = not self.training
-    for blk, cache in zip(self.blocks, cache_prev):
+    for blk, cache in zip(self.blocks, prev_cache):
       if self.use_checkpointing:
         x, layer_cache_new = torch.utils.checkpoint.checkpoint(
             blk, x, cache, use_linear_scan, use_reentrant=False
@@ -297,9 +299,9 @@ class TAPNext(nn.Module):
     visible_logits = self.visible_head(x)
     return tracks, track_logits, visible_logits
 
-  def forward(self, video, query_points=None, removed_indices: List[int] = None):
+  def forward(self, video, query_points=None, removed_mask: torch.Tensor = None):
     if self.state is not None:
-      self.update_cache(query_points, removed_indices)
+      self.update_cache(query_points, removed_mask)
 
     # video.shape
     b, t, _, _, _ = video.shape
