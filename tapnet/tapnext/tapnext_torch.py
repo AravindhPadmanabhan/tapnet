@@ -164,7 +164,9 @@ class TAPNext(nn.Module):
   def update_cache(self, query_points: torch.Tensor, removed_indices: List[int]):
     """Update the cache with the current query points."""
     B, T, P, C = self.state.prev_input_tokens.shape
-    video_tokens, point_tokens = self.state.prev_input_tokens.split(1024, dim=2)
+    # video_tokens, point_tokens = self.state.prev_input_tokens.split(1024, dim=2)
+    video_tokens = self.state.prev_input_tokens[:, :, :1024]  # [b t (h * w) c]
+    point_tokens = self.state.prev_input_tokens[:, :, 1024:]  # [b t (Q) c]
     device = query_points.device
     cache_prev = self.state.prev_hidden_state
     Q_prev = P - 1024
@@ -340,7 +342,9 @@ class TAPNext(nn.Module):
         )
       ssm_cache.append(ssm_cache_layer)
     x = self.encoder_norm(x)
-    video_tokens, point_tokens = x.split(h * w, dim=2)
+    # video_tokens, point_tokens = x.split(h * w, dim=2)
+    video_tokens = x[:, :, :h * w]
+    point_tokens = x[:, :, h * w:]
 
     if self.state is None:  
       self.state = TAPNextTrackingState(step=step + t, hidden_state=ssm_cache, prev_input_tokens=prev_input_tokens)
