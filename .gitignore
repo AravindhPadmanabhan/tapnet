@@ -27,3 +27,5 @@ output/
 checkpoints/
 assets/
 *.npy
+
+**/*.npz
